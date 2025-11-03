@@ -1,5 +1,4 @@
-﻿// DeepCopyGen/DeepCopyGenerator.cs
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -123,151 +122,203 @@ namespace Matcher
                 sb.AppendLine("{");
             }
             var containingTypes = GetContainingTypes(typeSymbol);
+            bool canNestInAllContainers = containingTypes.All(ct => IsPartial(ct));
+            bool targetIsPartial = IsPartial(typeSymbol);
+            bool generateAsPartial = canNestInAllContainers && targetIsPartial;
             int openedTypes = 0;
-            foreach (var ct in containingTypes)
+            if (generateAsPartial)
             {
-                if (!MatcherGenerator.Helpers.IsPartial(ct))
-                    break;
-
-                var acc = MatcherGenerator.Helpers.GetAccessibilityKeyword(ct.DeclaredAccessibility);
-                var kind = ct.TypeKind == TypeKind.Struct ? "struct" : "class";
-                sb.AppendLine($"{acc} partial {kind} {ct.Name}");
+                foreach (var ct in containingTypes)
+                {
+                    if (!IsPartial(ct))
+                        break;
+                    var acc = GetAccessibilityKeyword(ct.DeclaredAccessibility);
+                    var kind = ct.TypeKind == TypeKind.Struct ? "struct" : "class";
+                    sb.AppendLine($"{acc} partial {kind} {ct.Name}");
+                    sb.AppendLine("{");
+                    openedTypes++;
+                }
+                var typeName = typeSymbol.Name;
+                // generate partial class
+                var accessibility = GetAccessibilityKeyword(typeSymbol.DeclaredAccessibility);
+                var typeKindKeyword = typeSymbol.TypeKind == TypeKind.Struct ? "struct" : "class";
+                sb.AppendLine($"{accessibility} partial {typeKindKeyword} {typeName}");
                 sb.AppendLine("{");
-                openedTypes++;
+                sb.AppendLine($"    /// <summary>");
+                sb.AppendLine($"    /// Attempts to copy an object as deep as feasible.");
+                sb.AppendLine($"    /// </summary>");
+                sb.AppendLine($"    public {typeName} DeepCopy()");
+                sb.AppendLine("    {");
+                if (typeSymbol.TypeKind == TypeKind.Struct)
+                {
+                    sb.AppendLine("        var copy = this;");
+                }
+                else
+                {
+                    sb.AppendLine($"        var copy = ({typeName})this.MemberwiseClone();");
+                }
+                var members = GetInstanceMembers(typeSymbol);
+                foreach (var m in members)
+                {
+                    GenerateMemberCopy(sb, "copy", "this", m, annotatedTypes, assignValueLikes: false);
+                }
+                sb.AppendLine("        return copy;");
+                sb.AppendLine("    }");
+                sb.AppendLine("}"); // end class
+                for (int i = 0; i < openedTypes; i++)
+                    sb.AppendLine("}");
             }
-            var typeName = typeSymbol.Name;
-            // generate partial class
-            var accessibility = MatcherGenerator.Helpers.GetAccessibilityKeyword(typeSymbol.DeclaredAccessibility);
-            var typeKindKeyword = typeSymbol.TypeKind == TypeKind.Struct ? "struct" : "class";
-            sb.AppendLine($"{accessibility} partial {typeKindKeyword} {typeName}");
-            sb.AppendLine("{");
-            sb.AppendLine($"    /// <summary>");
-            sb.AppendLine($"    /// Attempts to copy an object as deep as feasible.");
-            sb.AppendLine($"    /// </summary>");
-            sb.AppendLine($"    public {typeName} DeepCopy()");
-            sb.AppendLine("    {");
-            if (typeSymbol.TypeKind == TypeKind.Struct)
-            {
-                sb.AppendLine("        var copy = this;");
-            }
-            else
-            {
-                sb.AppendLine($"        var copy = ({typeName})this.MemberwiseClone();");
-            }
-
-            var members = GetInstanceMembers(typeSymbol);
-            foreach (var m in members)
-            {
-                GenerateMemberCopy(sb, "copy", "this", m, annotatedTypes);
-            }
-
-            sb.AppendLine("        return copy;");
-            sb.AppendLine("    }");
-            sb.AppendLine("}"); // end class
-            for (int i = 0; i < openedTypes; i++)
-                sb.AppendLine("}");
-            // List<T> and T[] extentions
+            // extentions
             sb.AppendLine();
             var extName = GetExtensionClassName(typeSymbol);
             var fullT = typeSymbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
             sb.AppendLine($"public static class {extName}");
             sb.AppendLine("{");
-            // List<T>
-            sb.AppendLine($"    public static List<{fullT}> DeepCopy(this List<{fullT}> source)");
-            sb.AppendLine("    {");
-            sb.AppendLine("        if (source == null) return null;");
-            sb.AppendLine($"        var result = new List<{fullT}>(source.Count);");
-            sb.AppendLine("        for (int i = 0; i < source.Count; i++)");
-            sb.AppendLine("        {");
-            sb.AppendLine("            var item = source[i];");
-            sb.AppendLine("            result.Add(item != null ? item.DeepCopy() : null);");
-            sb.AppendLine("        }");
-            sb.AppendLine("        return result;");
-            sb.AppendLine("    }");
+            bool canImplementExtension = !generateAsPartial && 
+                (
+                    typeSymbol.TypeKind == TypeKind.Struct || 
+                    (!typeSymbol.IsAbstract && typeSymbol.InstanceConstructors
+                    .Any(c => IsCtorCallableFromHere(c) && c.Parameters.Length == 0))
+                );
+            if (!generateAsPartial)
+            {
 
-            // T[]
-            sb.AppendLine($"    public static {fullT}[] DeepCopy(this {fullT}[] source)");
-            sb.AppendLine("    {");
-            sb.AppendLine("        if (source == null) return null;");
-            sb.AppendLine($"        var result = new {fullT}[source.Length];");
-            sb.AppendLine("        for (int i = 0; i < source.Length; i++)");
-            sb.AppendLine("        {");
-            sb.AppendLine("            var item = source[i];");
-            sb.AppendLine("            result[i] = item != null ? item.DeepCopy() : null;");
-            sb.AppendLine("        }");
-            sb.AppendLine("        return result;");
-            sb.AppendLine("    }");
+                sb.AppendLine($"    /// <summary>");
+                sb.AppendLine($"    /// Attempts to copy an object as deep as feasible.");
+                sb.AppendLine($"    /// </summary>");
+                sb.AppendLine($"    public static {fullT} DeepCopy(this {fullT} source)");
+                sb.AppendLine("    {");
+                if (typeSymbol.TypeKind == TypeKind.Struct)
+                {
+                    sb.AppendLine("        var copy = source;");
+                    var membersExt = GetInstanceMembers(typeSymbol, forExtension: true);
+                    foreach (var m in membersExt)
+                    {
+                        GenerateMemberCopy(sb, "copy", "source", m, annotatedTypes, assignValueLikes: false);
+                    }
+                    sb.AppendLine("        return copy;");
+                }
+                else
+                {
+                    if (!typeSymbol.IsAbstract && typeSymbol.InstanceConstructors
+                        .Any(c => IsCtorCallableFromHere(c) && c.Parameters.Length == 0))
+                    {
+                        sb.AppendLine("        if (source == null) return null;");
+                        sb.AppendLine($"        var copy = new {fullT}();");
+                        var membersExt = GetInstanceMembers(typeSymbol, forExtension: true);
+                        foreach (var m in membersExt)
+                        {
+                            GenerateMemberCopy(sb, "copy", "source", m, annotatedTypes, assignValueLikes: true);
+                        }
+                        sb.AppendLine("        return copy;");
+                    }
+                    else
+                    {
+                        sb.AppendLine("        throw new NotSupportedException(\"DeepCopy extension cannot be generated: target type is not partial and has no accessible parameterless constructor or is abstract.\");");
+                    }
+                }
+                sb.AppendLine("    }");
+            }
+            bool hasTypeDeepCopy = generateAsPartial || canImplementExtension;
+            if (hasTypeDeepCopy)
+            {
+                // List<T>
+                sb.AppendLine($"    public static List<{fullT}> DeepCopy(this List<{fullT}> source)");
+                sb.AppendLine("    {");
+                sb.AppendLine("        if (source == null) return null;");
+                sb.AppendLine($"        var result = new List<{fullT}>(source.Count);");
+                sb.AppendLine("        for (int i = 0; i < source.Count; i++)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            var item = source[i];");
+                sb.AppendLine("            result.Add(item != null ? item.DeepCopy() : null);");
+                sb.AppendLine("        }");
+                sb.AppendLine("        return result;");
+                sb.AppendLine("    }");
 
-            // Dictionary<TKey, T>
-            sb.AppendLine($"    public static Dictionary<TKey, {fullT}> DeepCopy<TKey>(this Dictionary<TKey, {fullT}> source)");
-            sb.AppendLine("    {");
-            sb.AppendLine("        if (source == null) return null;");
-            sb.AppendLine($"        var result = new Dictionary<TKey, {fullT}>(source.Count, source.Comparer);");
-            sb.AppendLine("        foreach (var kv in source)");
-            sb.AppendLine("        {");
-            sb.AppendLine("            result[kv.Key] = kv.Value != null ? kv.Value.DeepCopy() : null;");
-            sb.AppendLine("        }");
-            sb.AppendLine("        return result;");
-            sb.AppendLine("    }");
+                // T[]
+                sb.AppendLine($"    public static {fullT}[] DeepCopy(this {fullT}[] source)");
+                sb.AppendLine("    {");
+                sb.AppendLine("        if (source == null) return null;");
+                sb.AppendLine($"        var result = new {fullT}[source.Length];");
+                sb.AppendLine("        for (int i = 0; i < source.Length; i++)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            var item = source[i];");
+                sb.AppendLine("            result[i] = item != null ? item.DeepCopy() : null;");
+                sb.AppendLine("        }");
+                sb.AppendLine("        return result;");
+                sb.AppendLine("    }");
 
-            sb.AppendLine($"    public static HashSet<{fullT}> DeepCopy(this HashSet<{fullT}> source)");
-            sb.AppendLine("    {");
-            sb.AppendLine("        if (source == null) return null;");
-            sb.AppendLine($"        var result = new HashSet<{fullT}>(source.Comparer);");
-            sb.AppendLine("        foreach (var item in source)");
-            sb.AppendLine("            result.Add(item != null ? item.DeepCopy() : null);");
-            sb.AppendLine("        return result;");
-            sb.AppendLine("    }");
+                // Dictionary<TKey, T>
+                sb.AppendLine($"    public static Dictionary<TKey, {fullT}> DeepCopy<TKey>(this Dictionary<TKey, {fullT}> source)");
+                sb.AppendLine("    {");
+                sb.AppendLine("        if (source == null) return null;");
+                sb.AppendLine($"        var result = new Dictionary<TKey, {fullT}>(source.Count, source.Comparer);");
+                sb.AppendLine("        foreach (var kv in source)");
+                sb.AppendLine("        {");
+                sb.AppendLine("            result[kv.Key] = kv.Value != null ? kv.Value.DeepCopy() : null;");
+                sb.AppendLine("        }");
+                sb.AppendLine("        return result;");
+                sb.AppendLine("    }");
 
-            // Queue<T>
-            sb.AppendLine($"    public static Queue<{fullT}> DeepCopy(this Queue<{fullT}> source)");
-            sb.AppendLine("    {");
-            sb.AppendLine("        if (source == null) return null;");
-            sb.AppendLine($"        var result = new Queue<{fullT}>(source.Count);");
-            sb.AppendLine("        foreach (var item in source)");
-            sb.AppendLine("            result.Enqueue(item != null ? item.DeepCopy() : null);");
-            sb.AppendLine("        return result;");
-            sb.AppendLine("    }");
+                sb.AppendLine($"    public static HashSet<{fullT}> DeepCopy(this HashSet<{fullT}> source)");
+                sb.AppendLine("    {");
+                sb.AppendLine("        if (source == null) return null;");
+                sb.AppendLine($"        var result = new HashSet<{fullT}>(source.Comparer);");
+                sb.AppendLine("        foreach (var item in source)");
+                sb.AppendLine("            result.Add(item != null ? item.DeepCopy() : null);");
+                sb.AppendLine("        return result;");
+                sb.AppendLine("    }");
 
-            // Stack<T>
-            sb.AppendLine($"    public static Stack<{fullT}> DeepCopy(this Stack<{fullT}> source)");
-            sb.AppendLine("    {");
-            sb.AppendLine("        if (source == null) return null;");
-            sb.AppendLine($"        var result = new Stack<{fullT}>(source.Count);");
-            sb.AppendLine("        foreach (var item in source.Reverse())"); // preserve order
-            sb.AppendLine("            result.Push(item != null ? item.DeepCopy() : null);");
-            sb.AppendLine("        return result;");
-            sb.AppendLine("    }");
+                // Queue<T>
+                sb.AppendLine($"    public static Queue<{fullT}> DeepCopy(this Queue<{fullT}> source)");
+                sb.AppendLine("    {");
+                sb.AppendLine("        if (source == null) return null;");
+                sb.AppendLine($"        var result = new Queue<{fullT}>(source.Count);");
+                sb.AppendLine("        foreach (var item in source)");
+                sb.AppendLine("            result.Enqueue(item != null ? item.DeepCopy() : null);");
+                sb.AppendLine("        return result;");
+                sb.AppendLine("    }");
 
-            // LinkedList<T>
-            sb.AppendLine($"    public static LinkedList<{fullT}> DeepCopy(this LinkedList<{fullT}> source)");
-            sb.AppendLine("    {");
-            sb.AppendLine("        if (source == null) return null;");
-            sb.AppendLine($"        var result = new LinkedList<{fullT}>();");
-            sb.AppendLine("        foreach (var item in source)");
-            sb.AppendLine("            result.AddLast(item != null ? item.DeepCopy() : null);");
-            sb.AppendLine("        return result;");
-            sb.AppendLine("    }");
+                // Stack<T>
+                sb.AppendLine($"    public static Stack<{fullT}> DeepCopy(this Stack<{fullT}> source)");
+                sb.AppendLine("    {");
+                sb.AppendLine("        if (source == null) return null;");
+                sb.AppendLine($"        var result = new Stack<{fullT}>(source.Count);");
+                sb.AppendLine("        foreach (var item in source.Reverse())"); // preserve order
+                sb.AppendLine("            result.Push(item != null ? item.DeepCopy() : null);");
+                sb.AppendLine("        return result;");
+                sb.AppendLine("    }");
 
-            // SortedSet<T>
-            sb.AppendLine($"    public static SortedSet<{fullT}> DeepCopy(this SortedSet<{fullT}> source)");
-            sb.AppendLine("    {");
-            sb.AppendLine("        if (source == null) return null;");
-            sb.AppendLine($"        var result = new SortedSet<{fullT}>(source.Comparer);");
-            sb.AppendLine("        foreach (var item in source)");
-            sb.AppendLine("            result.Add(item != null ? item.DeepCopy() : null);");
-            sb.AppendLine("        return result;");
-            sb.AppendLine("    }");
+                // LinkedList<T>
+                sb.AppendLine($"    public static LinkedList<{fullT}> DeepCopy(this LinkedList<{fullT}> source)");
+                sb.AppendLine("    {");
+                sb.AppendLine("        if (source == null) return null;");
+                sb.AppendLine($"        var result = new LinkedList<{fullT}>();");
+                sb.AppendLine("        foreach (var item in source)");
+                sb.AppendLine("            result.AddLast(item != null ? item.DeepCopy() : null);");
+                sb.AppendLine("        return result;");
+                sb.AppendLine("    }");
 
-            // ReadOnlyCollection<T>
-            sb.AppendLine($"    public static ReadOnlyCollection<{fullT}> DeepCopy(this ReadOnlyCollection<{fullT}> source)");
-            sb.AppendLine("    {");
-            sb.AppendLine("        if (source == null) return null;");
-            sb.AppendLine($"        var list = new List<{fullT}>(source.Count);");
-            sb.AppendLine("        foreach (var item in source)");
-            sb.AppendLine("            list.Add(item != null ? item.DeepCopy() : null);");
-            sb.AppendLine("        return new ReadOnlyCollection<" + fullT + ">(list);");
-            sb.AppendLine("    }");
+                // SortedSet<T>
+                sb.AppendLine($"    public static SortedSet<{fullT}> DeepCopy(this SortedSet<{fullT}> source)");
+                sb.AppendLine("    {");
+                sb.AppendLine("        if (source == null) return null;");
+                sb.AppendLine($"        var result = new SortedSet<{fullT}>(source.Comparer);");
+                sb.AppendLine("        foreach (var item in source)");
+                sb.AppendLine("            result.Add(item != null ? item.DeepCopy() : null);");
+                sb.AppendLine("        return result;");
+                sb.AppendLine("    }");
+
+                // ReadOnlyCollection<T>
+                sb.AppendLine($"    public static ReadOnlyCollection<{fullT}> DeepCopy(this ReadOnlyCollection<{fullT}> source)");
+                sb.AppendLine("    {");
+                sb.AppendLine("        if (source == null) return null;");
+                sb.AppendLine($"        var list = new List<{fullT}>(source.Count);");
+                sb.AppendLine("        foreach (var item in source)");
+                sb.AppendLine("            list.Add(item != null ? item.DeepCopy() : null);");
+                sb.AppendLine("        return new ReadOnlyCollection<" + fullT + ">(list);");
+                sb.AppendLine("    }");
+            }// end if(hasTypeDeepCopy)
 
             sb.AppendLine("}"); // end static class
 
@@ -285,7 +336,8 @@ namespace Matcher
             string copyVar,
             string sourceVar,
             ISymbol member,
-            HashSet<INamedTypeSymbol> annotatedTypes)
+            HashSet<INamedTypeSymbol> annotatedTypes,
+            bool assignValueLikes)
         {
             ITypeSymbol type;
             string memberAccess;
@@ -306,7 +358,11 @@ namespace Matcher
             }
 
             if (IsValueLike(type))
+            {
+                if (assignValueLikes)
+                    sb.AppendLine($"        {copyVar}.{memberAccess} = {sourceVar}.{memberAccess};");
                 return;
+            }
 
             // array
             if (type is IArrayTypeSymbol arrayType)
