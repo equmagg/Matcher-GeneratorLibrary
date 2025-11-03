@@ -1,0 +1,27 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+	<LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <OutputItemType>Analyzer</OutputItemType>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+    <IsRoslynComponent>true</IsRoslynComponent>
+    <AssemblyName>Matcher.Generator</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" PrivateAssets="all" />
+  </ItemGroup>
+	<PropertyGroup>
+  <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+  <IncludeBuildOutput>true</IncludeBuildOutput>
+  <PackageId>MatcherGenerator</PackageId>
+  <Version>1.0.7</Version>
+  <Authors>equmag</Authors>
+</PropertyGroup>
+<ItemGroup>
+  <None Include="$(OutputPath)\Matcher.Generator.dll"
+        Pack="true"
+        PackagePath="analyzers/dotnet/cs" />
+</ItemGroup>
+</Project>
