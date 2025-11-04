@@ -6,7 +6,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Text;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using static MatcherGenerator.Helpers;
+using static Matcher.Generator.Helpers;
 
 namespace Matcher.Generator
 {

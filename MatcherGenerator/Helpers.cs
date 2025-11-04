@@ -7,7 +7,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 
-namespace MatcherGenerator
+namespace Matcher.Generator
 {
     internal static class Helpers
     {
@@ -36,6 +36,29 @@ namespace MatcherGenerator
             a == Accessibility.Public ||
             a == Accessibility.Internal ||
             a == Accessibility.ProtectedOrInternal;
+        internal static bool IsReadableFromAssembly(IFieldSymbol f, INamedTypeSymbol inType)
+        {
+            return f.DeclaredAccessibility switch
+            {
+                Accessibility.Public => true,
+                Accessibility.Internal => SymbolEquals(f.ContainingAssembly, inType.ContainingAssembly),
+                Accessibility.ProtectedOrInternal => true,
+                _ => false
+            };
+        }
+
+        internal static bool IsReadableFromAssembly(IPropertySymbol p, INamedTypeSymbol inType)
+        {
+            var acc = p.GetMethod?.DeclaredAccessibility ?? Accessibility.Private;
+            return acc switch
+            {
+                Accessibility.Public => true,
+                Accessibility.Internal => SymbolEquals(p.ContainingAssembly, inType.ContainingAssembly),
+                Accessibility.ProtectedOrInternal => true,
+                _ => false
+            };
+        }
+
         internal static List<INamedTypeSymbol> GetContainingTypes(INamedTypeSymbol typeSymbol)
         {
             var list = new List<INamedTypeSymbol>();
@@ -47,6 +70,13 @@ namespace MatcherGenerator
             }
             return list;
         }
+        internal static ITypeSymbol? GetMemberType(ISymbol m) =>
+            m switch
+            {
+                IFieldSymbol f => f.Type,
+                IPropertySymbol p => p.Type,
+                _ => null
+            };
 
         internal static IEnumerable<ISymbol> GetInstanceMembers(INamedTypeSymbol typeSymbol, bool forExtension = false)
         {
@@ -100,6 +130,29 @@ namespace MatcherGenerator
             return ctor.DeclaredAccessibility == Accessibility.Public ||
                    ctor.DeclaredAccessibility == Accessibility.Internal;
         }
+        internal static bool SymbolEquals(ISymbol? a, ISymbol? b)
+            => SymbolEqualityComparer.Default.Equals(a, b);
+        internal static bool IsNumeric(ITypeSymbol t)
+        {
+            if (t.NullableAnnotation == NullableAnnotation.Annotated) return false;
 
+            return t.SpecialType switch
+            {
+                SpecialType.System_SByte or
+                SpecialType.System_Byte or
+                SpecialType.System_Int16 or
+                SpecialType.System_UInt16 or
+                SpecialType.System_Int32 or
+                SpecialType.System_UInt32 or
+                SpecialType.System_Int64 or
+                SpecialType.System_UInt64 or
+                SpecialType.System_IntPtr or
+                SpecialType.System_UIntPtr or
+                SpecialType.System_Single or
+                SpecialType.System_Double or
+                SpecialType.System_Decimal => true,
+                _ => false
+            };
+        }
     }
 }
