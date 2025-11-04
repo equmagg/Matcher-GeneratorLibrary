@@ -1,14 +1,15 @@
-﻿using System;
+﻿using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using Microsoft.CodeAnalysis.Text;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
-using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.Text;
-using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
+using System.Xml.Linq;
 using static Matcher.Generator.Helpers;
 
-namespace MatcherGenerator
+namespace Matcher.Generator
 {
     [Generator]
     public sealed class ArithmeticOperatorsGenerator : ISourceGenerator
@@ -19,9 +20,9 @@ namespace MatcherGenerator
 namespace Matcher
 {
     [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct, Inherited = false, AllowMultiple = true)]
-    public sealed class AddableToAttribute : Attribute
+    public sealed class AddableWithAttribute : Attribute
     {
-        public AddableToAttribute(Type other) { Other = other; }
+        public AddableWithAttribute(Type other) { Other = other; }
         public Type Other { get; }
     }
 
@@ -33,9 +34,9 @@ namespace Matcher
     }
 
     [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct, Inherited = false, AllowMultiple = true)]
-    public sealed class SubstractableToAttribute : Attribute
+    public sealed class SubstractableWithAttribute : Attribute
     {
-        public SubstractableToAttribute(Type other) { Other = other; }
+        public SubstractableWithAttribute(Type other) { Other = other; }
         public Type Other { get; }
     }
 
@@ -48,6 +49,9 @@ namespace Matcher
 
     [AttributeUsage(AttributeTargets.Field | AttributeTargets.Property, Inherited = false, AllowMultiple = false)]
     public sealed class FixedAttribute : Attribute { }
+
+    [AttributeUsage(AttributeTargets.Field | AttributeTargets.Property, Inherited = false, AllowMultiple = false)]
+    public sealed class AddableCollectionAttribute : Attribute { }
 
     [AttributeUsage(AttributeTargets.Field | AttributeTargets.Property, Inherited = false, AllowMultiple = true)]
     public sealed class FieldAliasAttribute : Attribute
@@ -73,9 +77,9 @@ namespace Matcher
 
             var compilation = context.Compilation;
 
-            var addToAttr = compilation.GetTypeByMetadataName("Matcher.AddableToAttribute");
+            var addToAttr = compilation.GetTypeByMetadataName("Matcher.AddableWithAttribute");
             var addFromAttr = compilation.GetTypeByMetadataName("Matcher.AddableFromAttribute");
-            var subToAttr = compilation.GetTypeByMetadataName("Matcher.SubstractableToAttribute");
+            var subToAttr = compilation.GetTypeByMetadataName("Matcher.SubstractableWithAttribute");
             var subFromAttr = compilation.GetTypeByMetadataName("Matcher.SubstractableFromAttribute");
             var fixedAttr = compilation.GetTypeByMetadataName("Matcher.FixedAttribute");
             foreach (var tds in rx.Candidates)
@@ -209,29 +213,29 @@ namespace Matcher
             var opTokenText = req.Kind == OperatorKind.Add ? "Adds" : "Subtracts";
 
             string signature;
-            string initResult;
+            string resInit;
             string leftName, rightName;
             if (req.Hand == Handedness.LeftIsThis_To)
             {
                 leftName = "__left";
                 rightName = "__right";
                 signature = $"public static {selfFull} operator {opToken}({selfFull} {leftName}, {otherFull} {rightName})";
-                initResult = "__res = __left;";
+                resInit = "var __res = __left;";
             }
             else
             {
                 leftName = "__left";
                 rightName = "__right";
                 signature = $"public static {selfFull} operator {opToken}({otherFull} {leftName}, {selfFull} {rightName})";
-                initResult = "__res = __right;";
+                resInit = "var __res = __right;";
             }
             sb.AppendLine("    /// <summary>");
             sb.AppendLine($"    /// {opTokenText} matching numeric fields/properties by name, skipping members marked with [Matcher.Fixed].");
             sb.AppendLine("    /// </summary>");
             sb.AppendLine($"    {signature}");
             sb.AppendLine("    {");
-            sb.AppendLine($"        var __res = {DefaultInit(self)};");
-            sb.AppendLine($"        {initResult}");
+            //sb.AppendLine($"        var __res = {DefaultInit(self)};");
+            sb.AppendLine($"        {resInit}");
             foreach (var p in pairs)
             {
                 var leftExpr = $"__res.{p.SelfName}";
@@ -239,6 +243,8 @@ namespace Matcher
 
                 sb.AppendLine($"        {leftExpr} = {leftExpr} {opToken} {rightExpr};");
             }
+            // Handle [AddableCollection] members
+            EmitCollectionOperations(sb, self, other, req, compilation);
 
             sb.AppendLine("        return __res;");
             sb.AppendLine("    }");
@@ -284,55 +290,417 @@ namespace Matcher
             Compilation compilation,
             INamedTypeSymbol? fixedAttr)
         {
-            // modifiable?
-            var selfMembers = self.GetMembers()
-                .Where(m => !m.IsStatic)
-                .Where(m =>
-                {
-                    if (m is IFieldSymbol f)
-                        return !f.IsConst && !f.IsImplicitlyDeclared && !HasAttr(f, "Matcher.FixedAttribute");
-                    if (m is IPropertySymbol p)
-                        return !p.IsIndexer && p.SetMethod is not null && !HasAttr(p, "Matcher.FixedAttribute");
-                    return false;
-                })
-                .ToDictionary(m => m.Name, StringComparer.Ordinal);
+            // writable & not [Fixed] on self and inherited
 
-            var otherReadable = other.GetMembers()
-                .Where(m => !m.IsStatic)
-                .Where(m =>
+            var selfMembers = new Dictionary<string, ISymbol>(StringComparer.Ordinal);
+            for (var cur = self; cur is not null; cur = cur.BaseType)
+            {
+                foreach (var m in cur.GetMembers())
                 {
+                    if (m.IsStatic) continue;
+                    if (selfMembers.ContainsKey(m.Name)) continue; // keep most derived
                     if (m is IFieldSymbol f)
-                        return !f.IsImplicitlyDeclared && IsReadableFromAssembly(f, self);
-                    if (m is IPropertySymbol p)
-                        return !p.IsIndexer && p.GetMethod is not null && IsReadableFromAssembly(p, self);
-                    return false;
-                })
-                .ToDictionary(m => m.Name, StringComparer.Ordinal);
+                    {
+                        if (f.IsConst || f.IsImplicitlyDeclared) continue;
+                        if (HasAttr(f, "Matcher.FixedAttribute")) continue;
+                        bool canWrite = f.DeclaredAccessibility switch
+                        {
+                            Accessibility.Public => true,
+                            Accessibility.Internal => SymbolEquals(f.ContainingAssembly, self.ContainingAssembly),
+                            Accessibility.ProtectedOrInternal => true,
+                            Accessibility.ProtectedAndInternal => SymbolEquals(f.ContainingAssembly, self.ContainingAssembly),
+                            Accessibility.Protected => true,
+                            Accessibility.Private => SymbolEquals(f.ContainingType, self),
+                            _ => false
+                        };
+                        if (!canWrite) continue;
+                        selfMembers[m.Name] = f;
+                    }
+                    else if (m is IPropertySymbol p)
+                    {
+                        if (p.IsIndexer) continue;
+                        if (HasAttr(p, "Matcher.FixedAttribute")) continue;
+                        if (p.SetMethod is null) continue;
+                        var acc = p.SetMethod.DeclaredAccessibility;
+                        bool canWrite = acc switch
+                        {
+                            Accessibility.Public => true,
+                            Accessibility.Internal => SymbolEquals(p.ContainingAssembly, self.ContainingAssembly),
+                            Accessibility.ProtectedOrInternal => true,
+                            Accessibility.ProtectedAndInternal => SymbolEquals(p.ContainingAssembly, self.ContainingAssembly),
+                            Accessibility.Protected => true,
+                            Accessibility.Private => SymbolEquals(p.ContainingType, self),
+                            _ => false
+                        };
+                        if (!canWrite) continue;
+                        selfMembers[m.Name] = p;
+                    }
+                }
+            }
+            // readable on other
+            var otherReadable = new Dictionary<string, ISymbol>(StringComparer.Ordinal);
+            for (var cur = other; cur is not null; cur = cur.BaseType)
+            {
+                foreach (var m in cur.GetMembers())
+                {
+                    if (m.IsStatic) continue;
+                    if (otherReadable.ContainsKey(m.Name)) continue;
+                    if (m is IFieldSymbol f)
+                    {
+                        if (f.IsImplicitlyDeclared) continue;
+                        if (!IsReadableFromAssembly(f, self)) continue;
+                        otherReadable[m.Name] = f;
+                    }
+                    else if (m is IPropertySymbol p)
+                    {
+                        if (p.IsIndexer) continue;
+                        if (p.GetMethod is null) continue;
+                        if (!IsReadableFromAssembly(p, self)) continue;
+                        otherReadable[m.Name] = p;
+                    }
+                }
+            }
+            // aliases on both sides
+            var selfAliasesByName = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            foreach (var kv in selfMembers)
+            {
+                var aliases = GetAliases(kv.Value).Distinct(StringComparer.Ordinal).ToList();
+                if (aliases.Count > 0) selfAliasesByName[kv.Key] = aliases;
+            }
+            var otherAliasesByName = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            foreach (var kv in otherReadable)
+            {
+                var aliases = GetAliases(kv.Value).Distinct(StringComparer.Ordinal).ToList();
+                if (aliases.Count > 0) otherAliasesByName[kv.Key] = aliases;
+            }
 
+            var otherAliasToNames = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            // reverse index
+            foreach (var kvp in otherAliasesByName)
+            {
+                string otherName = kvp.Key;
+                List<string> aliases = kvp.Value;
+                foreach (var a in aliases)
+                {
+                    if (!otherAliasToNames.TryGetValue(a, out var list))
+                    {
+                        list = new List<string>();
+                        otherAliasToNames[a] = list;
+                    }
+                    if (!list.Contains(otherName, StringComparer.Ordinal))
+                        list.Add(otherName);
+                }
+            }
             var pairs = new List<MemberPair>();
+            var usedOther = new HashSet<string>(StringComparer.Ordinal);
             foreach (var kvp in selfMembers)
             {
-                string name = kvp.Key;
+                string selfName = kvp.Key;
                 ISymbol mSelf = kvp.Value;
-                if (!otherReadable.TryGetValue(name, out var mOther))
-                    continue;
+                var candidates = new List<string> { selfName };
+                if (selfAliasesByName.TryGetValue(selfName, out var sa)) candidates.AddRange(sa);
+                if (otherAliasToNames.TryGetValue(selfName, out var viaOther)) candidates.AddRange(viaOther);
 
-                var tSelf = GetMemberType(mSelf);
-                var tOther = GetMemberType(mOther);
-                if (tSelf is null || tOther is null)
-                    continue;
+                var seen = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var cand in candidates)
+                {
+                    if (!seen.Add(cand)) continue; // deduplicate
+                    if (usedOther.Contains(cand)) continue; // mapping
+                    if (!otherReadable.TryGetValue(cand, out var mOther)) continue;
 
-                if (!IsNumeric(tSelf) || !IsNumeric(tOther))
-                    continue;
+                    var tSelf = GetMemberType(mSelf);
+                    var tOther = GetMemberType(mOther);
+                    if (tSelf is null || tOther is null) continue;
 
-                var conv = compilation.ClassifyConversion(tOther, tSelf);
-                if (!conv.Exists || !conv.IsImplicit)
-                    continue;
+                    // numeric only and implicit conversion
+                    if (!IsNumeric(tSelf) || !IsNumeric(tOther)) continue;
+                    var conv = compilation.ClassifyConversion(tOther, tSelf);
+                    if (!conv.Exists || !conv.IsImplicit) continue;
 
-                pairs.Add(new MemberPair(name, name));
+                    pairs.Add(new MemberPair(selfName, cand));
+                    usedOther.Add(cand);
+                    break; // next self member
+                }
             }
 
             return pairs;
+        }
+        private static void EmitCollectionOperations(
+            StringBuilder sb,
+            INamedTypeSymbol self,
+            INamedTypeSymbol other,
+            OpRequest req,
+            Compilation compilation)
+        {
+            var otherParam = req.Hand == Handedness.LeftIsThis_To ? "__right" : "__left";
+            var otherReadable = new Dictionary<string, ISymbol>(StringComparer.Ordinal);
+            for (var cur = other; cur is not null; cur = cur.BaseType)
+            {
+                foreach (var m in cur.GetMembers())
+                {
+                    if (m.IsStatic) continue;
+                    if (otherReadable.ContainsKey(m.Name)) continue;
+                    if (m is IFieldSymbol f)
+                    {
+                        if (f.IsImplicitlyDeclared) continue;
+                        if (!IsReadableFromAssembly(f, self)) continue;
+                        otherReadable[m.Name] = f;
+                    }
+                    else if (m is IPropertySymbol p)
+                    {
+                        if (p.IsIndexer) continue;
+                        if (p.GetMethod is null) continue;
+                        if (!IsReadableFromAssembly(p, self)) continue;
+                        otherReadable[m.Name] = p;
+                    }
+                }
+            }
+            var otherAliasesByName = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            foreach (var kv in otherReadable)
+            {
+                var aliases = GetAliases(kv.Value).Distinct(StringComparer.Ordinal).ToList();
+                if (aliases.Count > 0) otherAliasesByName[kv.Key] = aliases;
+            }
+            var otherAliasToNames = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            foreach (var kvp in otherAliasesByName)
+            {
+                foreach (var a in kvp.Value)
+                {
+                    if (!otherAliasToNames.TryGetValue(a, out var list))
+                    {
+                        list = new List<string>();
+                        otherAliasToNames[a] = list;
+                    }
+                    if (!list.Contains(kvp.Key, StringComparer.Ordinal))
+                        list.Add(kvp.Key);
+                }
+            }
+            foreach (var info in EnumerateAddableCollections(self, compilation))
+            {
+                string member = info.MemberName;
+                string elemFull = info.ElementType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+                var selfAliases = new List<string>();
+                ISymbol? selfMemberSym = null;
+                for (var cur = self; cur is not null && selfMemberSym is null; cur = cur.BaseType)
+                {
+                    selfMemberSym = cur.GetMembers().FirstOrDefault(m => !m.IsStatic && m.Name == member);
+                }
+                if (selfMemberSym != null)
+                    selfAliases.AddRange(GetAliases(selfMemberSym));
+                var candidateKeys = new List<string> { member };
+                candidateKeys.AddRange(selfAliases.Distinct(StringComparer.Ordinal));
+                // Try resolve a readable member
+                string? matchedOtherName = null;
+                ISymbol? matchedOtherSym = null;
+                bool matchedAsElement = false;
+                bool matchedAsSameCollection = false;
+                foreach (var key in candidateKeys)
+                {
+                    // direct name match
+                    if (otherReadable.TryGetValue(key, out var m))
+                    {
+                        var tOther = GetMemberType(m);
+                        if (tOther != null)
+                        {
+                            // Element match
+                            var conv = compilation.ClassifyConversion(tOther, info.ElementType);
+                            if (conv.Exists && conv.IsImplicit)
+                            {
+                                matchedOtherName = key; matchedOtherSym = m; matchedAsElement = true; break;
+                            }
+                            // Collection match
+                            if (TryGetCollectionInfo(tOther, compilation, out var k2, out var e2) &&
+                                SymbolEquals(e2, info.ElementType) &&
+                                ((k2 == CollectionKind.List && info.Kind == CollectionKind.List) ||
+                                (k2 == CollectionKind.Array && info.Kind == CollectionKind.Array)))
+                            {
+                                matchedOtherName = key; matchedOtherSym = m; matchedAsSameCollection = true; break;
+                            }
+                        }
+                    }
+                    // match via alias
+                    if (matchedOtherSym is null && otherAliasToNames.TryGetValue(key, out var via))
+                    {
+                        foreach (var oname in via)
+                        {
+                            if (!otherReadable.TryGetValue(oname, out var m2)) continue;
+                            var tOther2 = GetMemberType(m2);
+                            if (tOther2 is null) continue;
+                            var conv2 = compilation.ClassifyConversion(tOther2, info.ElementType);
+                            if (conv2.Exists && conv2.IsImplicit)
+                            {
+                                matchedOtherName = oname; matchedOtherSym = m2; matchedAsElement = true; break;
+                            }
+                            if (TryGetCollectionInfo(tOther2, compilation, out var k3, out var e3) &&
+                                SymbolEquals(e3, info.ElementType) &&
+                                ((k3 == CollectionKind.List && info.Kind == CollectionKind.List) ||
+                                (k3 == CollectionKind.Array && info.Kind == CollectionKind.Array)))
+                            {
+                                matchedOtherName = oname; matchedOtherSym = m2; matchedAsSameCollection = true; break;
+                            }
+                        }
+                    }
+                    if (matchedOtherSym != null) break;
+                }
+                if (matchedOtherSym == null) continue; // nothing to do
+                var otherAccess = $"{otherParam}.{matchedOtherName}";
+                if (req.Kind == OperatorKind.Add)
+                {
+                    if (matchedAsElement)
+                    {
+                        if (info.Kind == CollectionKind.List)
+                        {
+                            sb.AppendLine($"        if (__res.{member} == null) __res.{member} = new global::System.Collections.Generic.List<{elemFull}>();");
+                            sb.AppendLine($"        __res.{member}.Add({otherAccess});");
+                        }
+                        else if (info.Kind == CollectionKind.Array)
+                        {
+                            sb.AppendLine($"        var __a_{member} = __res.{member};");
+                            sb.AppendLine($"        if (__a_{member} == null) {{ __res.{member} = new {elemFull}[] {{ {otherAccess} }}; }}");
+                            sb.AppendLine($"        else {{ var __len_{member} = __a_{member}.Length; var __new_{member} = new {elemFull}[__len_{member} + 1];");
+                            sb.AppendLine($"               global::System.Array.Copy(__a_{member}, __new_{member}, __len_{member}); __new_{member}[__len_{member}] " +
+                                $"= {otherAccess}; __res.{member} = __new_{member}; }}");
+                        }
+                    }
+                    else if (matchedAsSameCollection)
+                    {
+                        if (info.Kind == CollectionKind.List)
+                        {
+                            sb.AppendLine($"        var __o_{member} = {otherAccess};");
+                            sb.AppendLine($"        if (__o_{member} != null) {{");
+                            sb.AppendLine($"            if (__res.{member} == null) __res.{member} = new global::System.Collections.Generic.List<{elemFull}>(__o_{member});");
+                            sb.AppendLine($"            else __res.{member}.AddRange(__o_{member});");
+                            sb.AppendLine($"        }}");
+                        }
+                        else if (info.Kind == CollectionKind.Array)
+                        {
+                            sb.AppendLine($"        var __a_{member} = __res.{member};");
+                            sb.AppendLine($"        var __b_{member} = {otherAccess};");
+                            sb.AppendLine($"        if (__b_{member} != null && __b_{member}.Length != 0) {{");
+                            sb.AppendLine($"            if (__a_{member} == null || __a_{member}.Length == 0) __res.{member} = ( {elemFull}[] )__b_{member}.Clone();");
+                            sb.AppendLine($"            else {{ var __new_{member} = new {elemFull}[__a_{member}.Length + __b_{member}.Length];");
+                            sb.AppendLine($"                   global::System.Array.Copy(__a_{member}, __new_{member}, __a_{member}.Length);");
+                            sb.AppendLine($"                   global::System.Array.Copy(__b_{member}, 0, __new_{member}, __a_{member}.Length, __b_{member}.Length);");
+                            sb.AppendLine($"                   __res.{member} = __new_{member}; }}");
+                            sb.AppendLine($"        }}");
+                        }
+                    }
+                }
+                else if (req.Kind == OperatorKind.Sub)
+                {
+                    if (matchedAsElement)
+                    {
+                        if (info.Kind == CollectionKind.List)
+                        {
+                            sb.AppendLine($"        if (__res.{member} != null) __res.{member}.Remove({otherAccess});");
+                        }
+                        else if (info.Kind == CollectionKind.Array)
+                        {
+                            sb.AppendLine($"        var __a_{member} = __res.{member};");
+                            sb.AppendLine($"        if (__a_{member} != null) {{ int __idx_{member} = global::System.Array.IndexOf(__a_{member}, {otherAccess});");
+                            sb.AppendLine($"            if (__idx_{member} >= 0) {{ var __new_{member} = new {elemFull}[__a_{member}.Length - 1];");
+                            sb.AppendLine($"                if (__idx_{member} > 0) global::System.Array.Copy(__a_{member}, 0, __new_{member}, 0, __idx_{member});");
+                            sb.AppendLine($"                if (__idx_{member} + 1 < __a_{member}.Length) global::System.Array.Copy(__a_{member}, __idx_{member} + 1, __new_{member}, __idx_{member}, __a_{member}.Length - __idx_{member} - 1);");
+                            sb.AppendLine($"                __res.{member} = __new_{member}; }}");
+                            sb.AppendLine($"        }}");
+                        }
+                    }
+                    else if (matchedAsSameCollection)
+                    {
+                        if (info.Kind == CollectionKind.List)
+                        {
+                            sb.AppendLine($"        var __lst_{member} = __res.{member}; var __o_{member} = {otherAccess};");
+                            sb.AppendLine($"        if (__lst_{member} != null && __o_{member} != null) {{ foreach (var __it in __o_{member}) __lst_{member}.Remove(__it); }}");
+                        }
+                        else if (info.Kind == CollectionKind.Array)
+                        {
+                            sb.AppendLine($"        var __a_{member} = __res.{member}; var __b_{member} = {otherAccess};");
+                            sb.AppendLine($"        if (__a_{member} != null && __b_{member} != null) {{");
+                            sb.AppendLine($"            var __tmp_{member} = new global::System.Collections.Generic.List<{elemFull}>(__a_{member});");
+                            sb.AppendLine($"            int __origCnt_{member} = __tmp_{member}.Count;");
+                            sb.AppendLine($"            foreach (var __it in __b_{member}) __tmp_{member}.Remove(__it);");
+                            sb.AppendLine($"            if (__tmp_{member}.Count != __origCnt_{member}) __res.{member} = __tmp_{member}.ToArray();");
+                            sb.AppendLine($"        }}");
+                        }
+                    }
+                }
+            }
+        }
+        private static IEnumerable<(string MemberName, CollectionKind Kind, ITypeSymbol ElementType)> EnumerateAddableCollections(INamedTypeSymbol self, Compilation compilation)
+        {
+            // writable & not [Fixed] & [AddableCollection]
+            for (var cur = self; cur is not null; cur = cur.BaseType)
+            {
+                foreach (var m in cur.GetMembers())
+                {
+                    if (m.IsStatic) continue;
+                    if (!HasAttr(m, "Matcher.AddableCollectionAttribute")) continue;
+                    ISymbol? chosen = null;
+                    if (m is IFieldSymbol f)
+                    {
+                        if (f.IsConst || f.IsImplicitlyDeclared) continue;
+                        bool canWrite = f.DeclaredAccessibility switch
+                        {
+                            Accessibility.Public => true,
+                            Accessibility.Internal => SymbolEquals(f.ContainingAssembly, self.ContainingAssembly),
+                            Accessibility.ProtectedOrInternal => true,
+                            Accessibility.ProtectedAndInternal => SymbolEquals(f.ContainingAssembly, self.ContainingAssembly),
+                            Accessibility.Protected => true,
+                            Accessibility.Private => SymbolEquals(f.ContainingType, self),
+                            _ => false
+                        };
+                        if (!canWrite) continue;
+                        chosen = f;
+                    }
+                    else if (m is IPropertySymbol p)
+                    {
+                        if (p.IsIndexer) continue;
+                        if (p.SetMethod is null) continue;
+                        var acc = p.SetMethod.DeclaredAccessibility;
+                        bool canWrite = acc switch
+                        {
+                            Accessibility.Public => true,
+                            Accessibility.Internal => SymbolEquals(p.ContainingAssembly, self.ContainingAssembly),
+                            Accessibility.ProtectedOrInternal => true,
+                            Accessibility.ProtectedAndInternal => SymbolEquals(p.ContainingAssembly, self.ContainingAssembly),
+                            Accessibility.Protected => true,
+                            Accessibility.Private => SymbolEquals(p.ContainingType, self),
+                            _ => false
+                        };
+                        if (!canWrite) continue;
+                        chosen = p;
+                    }
+                    if (chosen is null) continue;
+                    var t = GetMemberType(chosen);
+                    if (t is null) continue;
+                    if (TryGetCollectionInfo(t, compilation, out var kind, out var elem))
+                        yield return (m.Name, kind, elem);
+                }
+            }
+        }
+        private static bool TryGetCollectionInfo(ITypeSymbol t, Compilation compilation, out CollectionKind kind, out ITypeSymbol element)
+        {
+            // List<T>
+            if (t is INamedTypeSymbol nt && nt.IsGenericType)
+            {
+                var listDef = compilation.GetTypeByMetadataName("System.Collections.Generic.List`1");
+                if (listDef != null && SymbolEquals(nt.OriginalDefinition, listDef))
+                {
+                    kind = CollectionKind.List;
+                    element = nt.TypeArguments[0];
+                    return true;
+                }
+            }
+            // T[]
+            if (t is IArrayTypeSymbol at)
+            {
+                kind = CollectionKind.Array;
+                element = at.ElementType;
+                return true;
+            }
+            kind = default;
+            element = null!;
+            return false;
         }
         private static void ReportNotPartial(GeneratorExecutionContext context, INamedTypeSymbol type)
         {
@@ -345,7 +713,7 @@ namespace Matcher
                 isEnabledByDefault: true);
             context.ReportDiagnostic(Diagnostic.Create(desc, Location.None, type.ToDisplayString()));
         }
-       
+        private enum CollectionKind { List, Array }
         private enum OperatorKind { Add, Sub }
         private enum Handedness { LeftIsThis_To, RightIsThis_From }
         private readonly struct MemberPair
@@ -405,6 +773,24 @@ namespace Matcher
                     h = (h * 397) ^ SymbolEqualityComparer.Default.GetHashCode(obj.Item3);
                     h = (h * 397) ^ SymbolEqualityComparer.Default.GetHashCode(obj.Item4);
                     return h;
+                }
+            }
+        }
+        internal static IEnumerable<string> GetAliases(ISymbol m)
+        {
+            // Read [Matcher.FieldAliasAttribute(string)]
+            foreach (var a in m.GetAttributes())
+            {
+                var ac = a.AttributeClass;
+                var isAlias = ac?.ToDisplayString() == "Matcher.FieldAliasAttribute"
+                              || ac?.Name == "FieldAliasAttribute";
+                if (!isAlias) continue;
+
+                if (a.ConstructorArguments.Length == 1 &&
+                    a.ConstructorArguments[0].Value is string s &&
+                    !string.IsNullOrWhiteSpace(s))
+                {
+                    yield return s.Trim();
                 }
             }
         }

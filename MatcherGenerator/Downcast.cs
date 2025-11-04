@@ -13,13 +13,16 @@ namespace Matcher.Generator
     [Generator]
     public sealed class DowncastGenerator : ISourceGenerator
     {
-        private const string AttributeSource = 
+        private const string AttributeSource =
 @"using System;
 
 namespace Matcher
 {
     [AttributeUsage(AttributeTargets.Class, Inherited = false, AllowMultiple = false)]
     public sealed class DowncastableAttribute : Attribute { }
+
+    [AttributeUsage(AttributeTargets.Class, Inherited = false, AllowMultiple = false)]
+    public sealed class CrosscastableAttribute : Attribute { }
 
     [AttributeUsage(AttributeTargets.Class | AttributeTargets.Field | AttributeTargets.Property, Inherited = false, AllowMultiple = false)]
     public sealed class DowncastIgnoreAttribute : Attribute { }
@@ -304,7 +307,7 @@ namespace Matcher
                 sb.AppendLine($"    public TTarget Cast<TTarget>() where TTarget : {baseFull}");
                 sb.AppendLine("    {");
                 sb.AppendLine("        if (this is null) throw new ArgumentNullException(\"source\");");
-
+                sb.AppendLine("        if (this is TTarget __same) return __same;");
                 foreach (var ti in targetInfos.Where(t => t.Ignore))
                 {
                     var tFull = ti.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
@@ -336,12 +339,11 @@ namespace Matcher
                 sb.AppendLine("    /// <summary>");
                 sb.AppendLine("    /// Creates a new instance of <typeparamref name=\"TTarget\"/> and copies base members.");
                 sb.AppendLine("    /// Supports base->derived, derived->base, and derived->derived casts.");
-                sb.AppendLine("    /// No reflection. NativeAOT-friendly.");
                 sb.AppendLine("    /// </summary>");
                 sb.AppendLine($"    public static TTarget Cast<TTarget>(this {baseFull} source) where TTarget : {baseFull}");
                 sb.AppendLine("    {");
                 sb.AppendLine("        if (source is null) throw new ArgumentNullException(nameof(source));");
-
+                sb.AppendLine("        if (source is TTarget __same) return __same;");
                 foreach (var ti in targetInfos.Where(t => t.Ignore))
                 {
                     var tFull = ti.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);

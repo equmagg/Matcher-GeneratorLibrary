@@ -43,6 +43,7 @@ namespace Matcher.Generator
                 Accessibility.Public => true,
                 Accessibility.Internal => SymbolEquals(f.ContainingAssembly, inType.ContainingAssembly),
                 Accessibility.ProtectedOrInternal => true,
+                Accessibility.Protected => SymbolEquals(f.ContainingType, inType),
                 _ => false
             };
         }
@@ -55,6 +56,7 @@ namespace Matcher.Generator
                 Accessibility.Public => true,
                 Accessibility.Internal => SymbolEquals(p.ContainingAssembly, inType.ContainingAssembly),
                 Accessibility.ProtectedOrInternal => true,
+                Accessibility.Protected => SymbolEquals(p.ContainingType, inType),
                 _ => false
             };
         }
