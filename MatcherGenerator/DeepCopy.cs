@@ -157,7 +157,7 @@ namespace Matcher
                 {
                     sb.AppendLine($"        var copy = ({typeName})this.MemberwiseClone();");
                 }
-                var members = GetInstanceMembers(typeSymbol);
+                var members = GetInstanceMembersDeep(typeSymbol);
                 foreach (var m in members)
                 {
                     GenerateMemberCopy(sb, "copy", "this", m, annotatedTypes, assignValueLikes: false);
@@ -191,7 +191,7 @@ namespace Matcher
                 if (typeSymbol.TypeKind == TypeKind.Struct)
                 {
                     sb.AppendLine("        var copy = source;");
-                    var membersExt = GetInstanceMembers(typeSymbol, forExtension: true);
+                    var membersExt = GetInstanceMembersDeep(typeSymbol, forExtension: true);
                     foreach (var m in membersExt)
                     {
                         GenerateMemberCopy(sb, "copy", "source", m, annotatedTypes, assignValueLikes: false);
@@ -205,7 +205,7 @@ namespace Matcher
                     {
                         sb.AppendLine("        if (source == null) return null;");
                         sb.AppendLine($"        var copy = new {fullT}();");
-                        var membersExt = GetInstanceMembers(typeSymbol, forExtension: true);
+                        var membersExt = GetInstanceMembersDeep(typeSymbol, forExtension: true);
                         foreach (var m in membersExt)
                         {
                             GenerateMemberCopy(sb, "copy", "source", m, annotatedTypes, assignValueLikes: true);

@@ -79,7 +79,24 @@ namespace Matcher.Generator
                 IPropertySymbol p => p.Type,
                 _ => null
             };
-
+        internal static IEnumerable<ISymbol> GetInstanceMembersDeep(INamedTypeSymbol typeSymbol, bool forExtension = false)
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            for (INamedTypeSymbol? t = typeSymbol; t != null; t = t.BaseType)
+            {
+                foreach (var m in GetInstanceMembers(t, forExtension))
+                {
+                    if (m is not IFieldSymbol && m is not IPropertySymbol)
+                        continue;
+                    var key = $"{m.Kind}:{m.Name}";
+                    if (!seen.Contains(key))
+                    {
+                        seen.Add(key);
+                        yield return m;
+                    }
+                }
+            }
+        }
         internal static IEnumerable<ISymbol> GetInstanceMembers(INamedTypeSymbol typeSymbol, bool forExtension = false)
         {
             // gather writable fields and properties

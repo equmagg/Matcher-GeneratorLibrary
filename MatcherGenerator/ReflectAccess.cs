@@ -164,22 +164,35 @@ namespace Matcher
             {
                 // TryGetByName
                 sb.AppendLine($"    /// <summary>Reads a member value by its name. Returns true on success.</summary>");
-                sb.AppendLine($"    public static bool TryGetByName(this {fullT} obj, string name, out object value)");
+                sb.AppendLine($"    /// <param name=\"comparer\">Optional name comparer. Defaults to <see cref=\"StringComparer.Ordinal\"/>.</param>");
+                sb.AppendLine($"    public static bool TryGetByName(this {fullT} obj, string name, out object value, StringComparer comparer = null)");
                 sb.AppendLine("    {");
                 sb.AppendLine("        if (name == null) { value = null; return false; }");
+                sb.AppendLine("        comparer = comparer ?? StringComparer.Ordinal;");
                 if (readMembers.Length > 0)
                 {
-                    sb.AppendLine("        switch (name)");
+                    sb.AppendLine("        if (object.ReferenceEquals(comparer, StringComparer.Ordinal))");
+                    sb.AppendLine("        {");
+                    sb.AppendLine("            switch (name)");
+                    sb.AppendLine("            {");
+                    foreach (var m in readMembers)
+                    {
+                        sb.AppendLine($"                case \"{m.Name}\":");
+                        sb.AppendLine($"                    value = obj.{m.Name};");
+                        sb.AppendLine("                    return true;");
+                    }
+                    sb.AppendLine("                default:");
+                    sb.AppendLine("                    value = null;");
+                    sb.AppendLine("                    return false;");
+                    sb.AppendLine("            }");
+                    sb.AppendLine("        }");
+                    sb.AppendLine("        else");
                     sb.AppendLine("        {");
                     foreach (var m in readMembers)
                     {
-                        sb.AppendLine($"            case \"{m.Name}\":");
-                        sb.AppendLine($"                value = obj.{m.Name};");
-                        sb.AppendLine("                return true;");
+                        sb.AppendLine($"            if (comparer.Equals(name, \"{m.Name}\")) {{ value = obj.{m.Name}; return true; }}");
                     }
-                    sb.AppendLine("            default:");
-                    sb.AppendLine("                value = null;");
-                    sb.AppendLine("                return false;");
+                    sb.AppendLine("            value = null; return false;");
                     sb.AppendLine("        }");
                 }
                 else
@@ -192,10 +205,10 @@ namespace Matcher
                 sb.AppendLine();
                 sb.AppendLine($"    /// <summary>Reads a member value by its name.</summary>");
                 sb.AppendLine($"    /// <exception cref=\"ArgumentOutOfRangeException\"></exception>");
-                sb.AppendLine($"    public static object GetByName(this {fullT} obj, string name)");
+                sb.AppendLine($"    public static object GetByName(this {fullT} obj, string name, StringComparer comparer = null)");
                 sb.AppendLine("    {");
                 sb.AppendLine("        object value;");
-                sb.AppendLine("        if (TryGetByName(obj, name, out value)) return value;");
+                sb.AppendLine("        if (TryGetByName(obj, name, out value, comparer)) return value;");
                 sb.AppendLine("        throw new ArgumentOutOfRangeException(\"name\", name, \"Member not found.\");");
                 sb.AppendLine("    }");
             }
@@ -204,56 +217,101 @@ namespace Matcher
                 // TrySetByName
                 sb.AppendLine();
                 sb.AppendLine($"    /// <summary>Writes a member value by its name. Returns true on success.</summary>");
-                sb.AppendLine($"    public static bool TrySetByName(this {fullT} obj, string name, object value)");
+                sb.AppendLine($"    /// <param name=\"comparer\">Optional name comparer. Defaults to <see cref=\"StringComparer.Ordinal\"/>.</param>");
+                sb.AppendLine($"    public static bool TrySetByName(this {fullT} obj, string name, object value, StringComparer comparer = null)");
                 sb.AppendLine("    {");
                 sb.AppendLine("        if (name == null) return false;");
+                sb.AppendLine("        comparer = comparer ?? StringComparer.Ordinal;");
 
                 if (writeMembers.Length > 0)
                 {
-                    sb.AppendLine("        switch (name)");
+                    sb.AppendLine("        if (object.ReferenceEquals(comparer, StringComparer.Ordinal))");
                     sb.AppendLine("        {");
-                    foreach (var m in writeMembers)
-                    {
-                        var t = GetMemberType(m);
-                        if (t == null) continue;
-
-                        var tStr = t.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-                        var isRef = !t.IsValueType;
-
-                        // Nullable<T>?
-                        INamedTypeSymbol? nullable = null;
-                        ITypeSymbol? nullableUnderlying = null;
-                        if (t is INamedTypeSymbol named && named.IsGenericType && named.ConstructedFrom?.ToDisplayString() == "System.Nullable<T>")
-                        {
-                            nullable = named;
-                            nullableUnderlying = named.TypeArguments[0];
-                        }
-
-                        sb.AppendLine($"            case \"{m.Name}\":");
-                        sb.AppendLine("            {");
-                        if (nullable != null && nullableUnderlying != null)
-                        {
-                            var uStr = nullableUnderlying.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-                            sb.AppendLine("                if (value == null) { obj." + m.Name + " = default(" + tStr + "); return true; }");
-                            sb.AppendLine("                if (value is " + uStr + " tmpU) { obj." + m.Name + " = tmpU; return true; }");
-                            sb.AppendLine("                return false;");
-                        }
-                        else if (isRef)
-                        {
-                            sb.AppendLine("                if (value == null) { obj." + m.Name + " = (" + tStr + ")value; return true; }");
-                            sb.AppendLine("                if (value is " + tStr + " tmp) { obj." + m.Name + " = tmp; return true; }");
-                            sb.AppendLine("                return false;");
-                        }
-                        else
-                        {
-                            // strict value type check
-                            sb.AppendLine("                if (value is " + tStr + " tmp) { obj." + m.Name + " = tmp; return true; }");
-                            sb.AppendLine("                return false;");
-                        }
-                        sb.AppendLine("            }");
-                    }
-                    sb.AppendLine("            default:");
-                    sb.AppendLine("                return false;");
+                    sb.AppendLine("            switch (name)"); 
+                    sb.AppendLine("            {"); 
+                    foreach (var m in writeMembers) 
+                    { 
+                        var t = GetMemberType(m); 
+                        if (t == null) continue; 
+ 
+                        var tStr = t.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat); 
+                        var isRef = !t.IsValueType; 
+ 
+                        INamedTypeSymbol? nullable = null; 
+                        ITypeSymbol? nullableUnderlying = null; 
+                        if (t is INamedTypeSymbol named && named.IsGenericType && named.ConstructedFrom?.ToDisplayString() == "System.Nullable<T>") 
+                        { 
+                            nullable = named; 
+                            nullableUnderlying = named.TypeArguments[0]; 
+                        } 
+ 
+                        sb.AppendLine($"                case \"{m.Name}\":"); 
+                        sb.AppendLine("                {"); 
+                        if (nullable != null && nullableUnderlying != null) 
+                        { 
+                            var uStr = nullableUnderlying.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat); 
+                            sb.AppendLine("                    if (value == null) { obj." + m.Name + " = default(" + tStr + "); return true; }"); 
+                            sb.AppendLine("                    if (value is " + uStr + " tmpU) { obj." + m.Name + " = tmpU; return true; }"); 
+                            sb.AppendLine("                    return false;"); 
+                        } 
+                        else if (isRef) 
+                        { 
+                            sb.AppendLine("                    if (value == null) { obj." + m.Name + " = (" + tStr + ")value; return true; }"); 
+                            sb.AppendLine("                    if (value is " + tStr + " tmp) { obj." + m.Name + " = tmp; return true; }"); 
+                            sb.AppendLine("                    return false;"); 
+                        } 
+                        else 
+                        { 
+                            sb.AppendLine("                    if (value is " + tStr + " tmp) { obj." + m.Name + " = tmp; return true; }"); 
+                            sb.AppendLine("                    return false;"); 
+                        } 
+                        sb.AppendLine("                }"); 
+                    } 
+                    sb.AppendLine("                default:"); 
+                    sb.AppendLine("                    return false;"); 
+                    sb.AppendLine("            }"); 
+                    sb.AppendLine("        }"); 
+                    sb.AppendLine("        else"); 
+                    sb.AppendLine("        {"); 
+                    foreach (var m in writeMembers) 
+                    { 
+                        var t = GetMemberType(m); 
+                        if (t == null) continue; 
+ 
+                        var tStr = t.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat); 
+                        var isRef = !t.IsValueType; 
+ 
+                        INamedTypeSymbol? nullable = null; 
+                        ITypeSymbol? nullableUnderlying = null; 
+                        if (t is INamedTypeSymbol named && named.IsGenericType && named.ConstructedFrom?.ToDisplayString() == "System.Nullable<T>") 
+                        { 
+                            nullable = named; 
+                            nullableUnderlying = named.TypeArguments[0]; 
+                        } 
+ 
+                        sb.AppendLine($"            if (comparer.Equals(name, \"{m.Name}\"))"); 
+                        sb.AppendLine("            {"); 
+                        if (nullable != null && nullableUnderlying != null) 
+                        { 
+                            var uStr = nullableUnderlying.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat); 
+                            sb.AppendLine("                if (value == null) { obj." + m.Name + " = default(" + tStr + "); return true; }"); 
+                            sb.AppendLine("                if (value is " + uStr + " tmpU) { obj." + m.Name + " = tmpU; return true; }"); 
+                            sb.AppendLine("                return false;"); 
+                        } 
+                        else if (isRef) 
+                        { 
+                            sb.AppendLine("                if (value == null) { obj." + m.Name + " = (" + tStr + ")value; return true; }"); 
+                            sb.AppendLine("                if (value is " + tStr + " tmp) { obj." + m.Name + " = tmp; return true; }"); 
+                            sb.AppendLine("                return false;"); 
+                        } 
+                        else 
+                        { 
+                            sb.AppendLine("                if (value is " + tStr + " tmp) { obj." + m.Name + " = tmp; return true; }"); 
+                            sb.AppendLine("                return false;"); 
+                        } 
+                        sb.AppendLine("            }"); 
+                    } 
+                    sb.AppendLine("            return false;"); 
                     sb.AppendLine("        }");
                 }
                 else
@@ -266,9 +324,9 @@ namespace Matcher
                 sb.AppendLine();
                 sb.AppendLine($"    /// <summary>Writes a member value by its name.</summary>");
                 sb.AppendLine($"    /// <exception cref=\"ArgumentOutOfRangeException\"></exception>");
-                sb.AppendLine($"    public static void SetByName(this {fullT} obj, string name, object value)");
+                sb.AppendLine($"    public static void SetByName(this {fullT} obj, string name, object value, StringComparer comparer = null)");
                 sb.AppendLine("    {");
-                sb.AppendLine("        if (!TrySetByName(obj, name, value))");
+                sb.AppendLine("        if (!TrySetByName(obj, name, value, comparer))");
                 sb.AppendLine("            throw new ArgumentOutOfRangeException(\"name\", name, \"Member not found or incompatible value type.\");");
                 sb.AppendLine("    }");
             }
@@ -281,49 +339,57 @@ namespace Matcher
         private static IEnumerable<ISymbol> GetReadableMembers(INamedTypeSymbol type)
         {
             // Fields readable from this assembly
-            foreach (var m in type.GetMembers())
+            // Include inherited members
+            for (var t = type; t != null; t = t.BaseType)
             {
-                if (m.IsStatic) continue;
+                foreach (var m in t.GetMembers())
+                {
+                    if (m.IsStatic) continue;
 
-                if (m is IFieldSymbol f)
-                {
-                    if (f.IsConst) continue;
-                    if (f.IsImplicitlyDeclared) continue;
-                    if (IsReadableFromAssembly(f, type))
-                        yield return f;
-                }
-                else if (m is IPropertySymbol p)
-                {
-                    if (p.IsIndexer) continue;
-                    if (p.GetMethod == null) continue;
-                    if (IsReadableFromAssembly(p, type))
-                        yield return p;
+                    if (m is IFieldSymbol f)
+                    {
+                        if (f.IsConst) continue;
+                        if (f.IsImplicitlyDeclared) continue;
+                        if (IsReadableFromAssembly(f, type))
+                            yield return f;
+                    }
+                    else if (m is IPropertySymbol p)
+                    {
+                        if (p.IsIndexer) continue;
+                        if (p.GetMethod == null) continue;
+                        if (IsReadableFromAssembly(p, type))
+                            yield return p;
+                    }
                 }
             }
         }
 
         private static IEnumerable<ISymbol> GetWritableMembers(INamedTypeSymbol type)
         {
-            // accessible from an extension context in the same assembly
-            foreach (var m in type.GetMembers())
+            // accessible from an extension context
+            // Include inherited members
+            for (var t = type; t != null; t = t.BaseType)
             {
-                if (m.IsStatic) continue;
+                foreach (var m in t.GetMembers())
+                {
+                    if (m.IsStatic) continue;
 
-                if (m is IFieldSymbol f)
-                {
-                    if (f.IsConst) continue;
-                    if (f.IsReadOnly) continue;
-                    if (f.IsImplicitlyDeclared) continue;
-                    if (IsAccessibleFromExtension(f.DeclaredAccessibility))
-                        yield return f;
-                }
-                else if (m is IPropertySymbol p)
-                {
-                    if (p.IsIndexer) continue;
-                    if (p.SetMethod == null) continue;
-                    if (IsAccessibleFromExtension(p.GetMethod?.DeclaredAccessibility ?? Accessibility.Private) &&
-                        IsAccessibleFromExtension(p.SetMethod.DeclaredAccessibility))
-                        yield return p;
+                    if (m is IFieldSymbol f)
+                    {
+                        if (f.IsConst) continue;
+                        if (f.IsReadOnly) continue;
+                        if (f.IsImplicitlyDeclared) continue;
+                        if (IsAccessibleFromExtension(f.DeclaredAccessibility))
+                            yield return f;
+                    }
+                    else if (m is IPropertySymbol p)
+                    {
+                        if (p.IsIndexer) continue;
+                        if (p.SetMethod == null) continue;
+                        if (IsAccessibleFromExtension(p.GetMethod?.DeclaredAccessibility ?? Accessibility.Private) &&
+                            IsAccessibleFromExtension(p.SetMethod.DeclaredAccessibility))
+                            yield return p;
+                    }
                 }
             }
         }

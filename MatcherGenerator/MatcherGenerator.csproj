@@ -16,7 +16,7 @@
   <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
   <IncludeBuildOutput>true</IncludeBuildOutput>
   <PackageId>MatcherGenerator</PackageId>
-  <Version>1.0.17</Version>
+  <Version>1.0.19</Version>
   <Authors>equmag</Authors>
 </PropertyGroup>
 <ItemGroup>
